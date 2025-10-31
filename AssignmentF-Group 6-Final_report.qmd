@@ -1,0 +1,257 @@
+---
+title: "MA615-AssignmentF-Strawberry"
+author:
+  - name: Group 6
+  - name: Zhuolin Liu
+  - name: Xiaoyang Hu
+  - name: Sile Wang
+format: pdf
+editor: visual
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+# 1.Background
+
+Strawberries (scientific name: Fragaria × ananassa) are an important economic crop in the United States. They are widely consumed in fresh form, as frozen products, or processed into various products. Understanding strawberry planting areas, production volumes, price trends, and profit margins is crucial for agricultural economic research, market analysis, and farm-level decision-making. This report uses historical data from the United States Department of Agriculture (USDA)/National Agricultural Statistics Service (NASS) to analyze the strawberry industry in the United States, examining production trends, price fluctuations, and preliminary profit forecasts, and providing basic future profit forecasts.
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(zoo)
+library(kableExtra)
+library(dplyr)
+```
+
+# 2.Data Source and Methods
+
+## 2.1 Data source
+
+The main data sources for this study include strawberry survey data from USDA/NASS and census data. These sources provide four core indicators:
+
+1.  **`Strawberries – Acres Bearing`**, which is the area of strawberries actually produced and available for market sales in a given year.
+
+2.  **`Strawberries – Price Received`**, measured in \$ / CWT, which is the farm price received by growers for every 100 hundredweight of agricultural products.
+
+3.  **`Strawberries – Production`**, measured in \$, representing the total crop value in US dollars, roughly equivalent to total sales revenue.
+
+4.  **`Strawberries, Utilized – Production`**, measured in CWT, which is the sold physical volume in hundredweight (1 CWT = 100 lb).
+
+These variables are economically meaningful. Acres Bearing is used as the denominator to convert “total scale” into “per-acre intensity” measures such as yield and revenue per acre. Price Received is the price driver of income. Production measured in dollars serves as a proxy for total industry revenue. Utilized Production (in CWT) reflects the amount of fruit that actually entered the market and therefore drives realized sales. They all can collectively help us calculate yield, income per acre, cost risks, and profit per acre.
+
+```{r}
+df <- read.csv("~/Documents/MA_615/Group6/ACRES BEARING+PRICE RECEIVED+PRODUCTION+UTILIZED – PRODUCTION.csv")
+```
+
+## 2.2 Cleaning
+
+```{r}
+new_df <- df %>%
+  clean_names() %>%
+  filter(df$Geo.Level == "NATIONAL", df$State == "US TOTAL") %>%
+  select(year, data_item, value) %>%
+  mutate(
+    year = as.numeric(year),
+    value = as.numeric(gsub(",", "", value))
+  ) %>%
+  filter(!is.na(value))
+head(new_df )
+```
+
+In the original dataset, the annual data records have multiple rows, sometimes including different survey types, and sometimes there are distinctions between "marketing year" and "annual" records. Therefore, in the first step of the cleaning process, we filtered the data set, retaining only the national observation results, that is, (Geo.Level == "NATIONAL" and State == "US TOTAL"), so as to avoid duplicate counting between states and ensure that the data for each year can be presented at the national level in the United States.
+
+### Pivot wider
+
+```{r}
+strawberry <- new_df %>%
+  pivot_wider(
+    names_from = data_item,
+    values_from = value,
+    values_fn = mean  
+  )
+
+colnames(strawberry) <- c("Year", "Acres_Bearing", "Price_per_CWT",
+                          "Production_USD", "Utilized_Production_CWT")
+
+head(strawberry)
+```
+
+And because the USDA data was initially recorded in character string form, these values were processed and converted to numerical form, that is, removing commas and forcing them to be of numeric type. At this stage, all remaining non-numeric or missing values were deleted. Then, we used the pivot_wider() function to convert the data from "long" format to "wide" format, making each economic/production concept a separate column. In the generated data frame, for each year, there are columns such as Acres_Bearing, Price_per_CWT, Production_USD, and Utilized_Production_CWT.
+
+### Fill missing values
+
+```{r}
+strawberry <- strawberry %>%
+  arrange(Year) %>%
+  mutate(
+    Acres_Bearing = na.approx(Acres_Bearing, na.rm = FALSE),
+    Price_per_CWT = na.approx(Price_per_CWT, na.rm = FALSE),
+    Production_USD = na.approx(Production_USD, na.rm = FALSE),
+    Utilized_Production_CWT = na.approx(Utilized_Production_CWT, na.rm = FALSE)
+  )
+
+head(strawberry)
+```
+
+Finally, for some years, one or more variables were missing. To generate a usable continuous time series, we filled in the missing values through the linear interpolation method (na.approx). This provided smooth estimates for the blank areas and enabled us to calculate derived quantities (such as per-acre yield) and conduct correlation and regression analyses without discarding entire rows of data. After interpolation, the dataset was sorted by year to create a consistent timeline.
+
+```{r}
+write_csv(strawberry, "clean_strawberry.csv")
+```
+
+### Compute key profitability metrics
+
+```{r}
+cost_per_acre <- 30000
+strawberry <- strawberry %>%
+  mutate(
+    Yield_per_Acre = Utilized_Production_CWT / Acres_Bearing,
+    Revenue_Est = Price_per_CWT * Utilized_Production_CWT,
+    Cost = Acres_Bearing * cost_per_acre,
+    Profit = Revenue_Est - Cost,
+    Profit_per_Acre = Profit / Acres_Bearing
+  )
+summary(strawberry)
+```
+
+After cleaning, some indicators were calculated:
+
+1.  **`Yield_per_Acre`** = `Utilized_Production_CWT / Acres_Bearing`.\
+    Shows usable sold production per acre (CWT). This shows how much usable/sold strawberry production we get per acre (in CWT). It measures the land's productivity.
+2.  **`Revenue_Est`** = `Price_per_CWT × Utilized_Production_CWT`. This is an estimate of total strawberry revenue. It uses the selling price and the sold quantity.
+3.  **`Cost`** = `Acres_Bearing × \$30,000`. We assumed it to be approximately \$30,000 per acre for profit calculations. This is a strong assumption, but it gives us a way to discuss costs.
+4.  **`Profit`** = `Revenue_Est − Cost`. This approximates total gross operating surplus for the industry under the stated cost assumption.
+5.  **`Profit_per_Acre`** = `Profit / Acres_Bearing`. This converts total profit into a per-acre profitability measure, which is easier to compare across years and across different acreage scales. This shows profit per acre. It lets us compare how “good” one year is compared to another, even if total acres change.
+
+# 3. Exploratory Data Analysis (EDA) and Profitability Modeling
+
+## 3.1 Key patterns
+
+### Plot 1
+
+```{r}
+ggplot(strawberry %>% 
+         filter(!is.na(Acres_Bearing), !is.na(Profit_per_Acre)),  
+       aes(x = Acres_Bearing, y = Profit_per_Acre)) +
+  geom_point(color = "blue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Profit per Acre vs Acres Bearing",
+       x = "Acres Bearing", y = "Profit per Acre") +
+  theme_minimal()
+```
+
+### Plot2
+
+```{r}
+ggplot(
+  strawberry %>%
+    filter(!is.na(Price_per_CWT), !is.na(Profit_per_Acre)),  
+  aes(x = Price_per_CWT, y = Profit_per_Acre)
+) +
+  geom_point(color = "blue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Profit per Acre vs Price per CWT",
+    x = "Price ($/CWT)",
+    y = "Profit per Acre"
+  ) +
+  theme_minimal()
+```
+
+### Plot3
+
+```{r}
+ggplot(
+  strawberry %>%
+    filter(!is.na(Production_USD), !is.na(Profit_per_Acre)), 
+  aes(x = Production_USD, y = Profit_per_Acre)
+) +
+  geom_point(color = "blue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Profit per Acre vs Production Value",
+    x = "Production (USD)",
+    y = "Profit per Acre"
+  ) +
+  theme_minimal()
+
+```
+
+### Plot4
+
+```{r}
+ggplot(
+  strawberry %>%
+    filter(!is.na(Utilized_Production_CWT), !is.na(Profit_per_Acre)), 
+  aes(x = Utilized_Production_CWT, y = Profit_per_Acre)
+) +
+  geom_point(color = "blue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(
+    title = "Profit per Acre vs Utilized Production",
+    x = "Utilized Production (CWT)",
+    y = "Profit per Acre"
+  ) +
+  theme_minimal()
+```
+
+The Exploratory data analysis shows several economic patterns:
+
+1.  **`Strawberry acreage is significant and supports high output`**. Acres_Bearing tells us how many acres are actually producing strawberries. In recent years, the U.S. has had tens of thousands of bearing acres. When we divide Utilized_Production_CWT by Acres_Bearing, we get Yield_per_Acre, which is usually very high. This means each acre of strawberries produces a lot of marketable fruit. Strawberries are very intensive.
+
+2.  **`Prices are high`**. Price_per_CWT is often above \$100 per CWT. This is a high farm-gate price, which shows that strawberries are valuable and not a cheap bulk commodity. Because revenue is basically price x quantity sold, a higher price directly increases total revenue.
+
+3.  **`Production value is very large`**. Production_USD (the value of production in dollars) is in the billions. This represents the industry's economic scale. When the price increases, Production_USD tends to increase as well. So revenue is very sensitive to price, not just to the number of pounds sold.
+
+4.  **`Profit is positive in many years under our cost assumption`**. We estimate the cost at \$ 30,000 per acre. Then we compare that to the estimated revenue. Profit and Profit_per_Acre are often clearly positive in our results.
+
+In some years, Profit_per_Acre is several thousand dollars or more. This means that, under our assumptions, strawberry farming can still be profitable per acre.
+
+## 3.2 Correlation results
+
+```{r}
+corr <- strawberry %>%
+  select(Acres_Bearing, Price_per_CWT, Production_USD,
+         Utilized_Production_CWT, Profit_per_Acre) %>%
+  cor(use = "pairwise.complete.obs")
+
+print(round(corr,3))
+```
+
+We also looked at the correlation between variables:
+
+1.  **`Profit_per_Acre is positively related to Price_per_CWT`**. When growers get a better price,they earn more profit per acre.
+2.  **`Profit_per_Acre is also positively related to Utilized_Production_CWT`**. Selling more usable fruit helps profit.
+3.  **`Acres_Bearing has a weak or slightly negative relationship with Profit_per_Acre`**. This suggests that when the industry becomes very large in total acres, profit per acre can go down. One reason is that the cost increases with the number of acres.
+
+## 3.3 Model
+
+```{r}
+model <- lm(Profit_per_Acre ~ Acres_Bearing + Price_per_CWT +
+              Production_USD + Utilized_Production_CWT,
+            data = strawberry)
+summary(model)
+plot(model, which = 1, sub.caption = "")
+```
+
+We also ran a simple linear model. In the model, we found that:
+
+1.  **`The dependent variable (the thing we try to explain) is Profit_per_Acre`**.
+
+2.  **`The independent variables (the predictors) are Acres_Bearing,Price_per_CWT,Production_USD, and Utilized_Production_CWT`**.
+
+The regression shows:
+
+1.  **`Higher Price_per_CWT means higher Profit_per_Acre`**.
+
+2.  **`Higher Utilized_Production_CWT means higher Profit_per_Acre`**.
+
+3.  **`Higher Acres_Bearing means lower Profit_per_Acre`**.
+
+Also, the model's R-squared is extremely high, indicating that these variables together explain almost all of the variation in Profit_per_Acre in our cleaned data. This supports the same story from EDA: profit per acre in strawberries mainly depends on getting a high selling price and getting a lot of marketable product per acre.
+
+# 4. Conclusion
+
+In summary, in recent years, strawberry planting areas and output in the United States have continued to increase, and prices have also risen slightly. Profitability is affected by both income and costs. Although there are some fluctuations, the overall trend is positive.
