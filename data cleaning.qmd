@@ -1,0 +1,62 @@
+---
+title: "data cleaning"
+format: html
+editor: visual
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+## 1.Import packages
+library(tidyverse)
+library(janitor)
+library(zoo)
+
+```
+
+```{r}
+## 2.Read and clean data
+df <- read.csv("ACRES BEARING+PRICE RECEIVED+PRODUCTION+UTILIZED – PRODUCTION.csv")
+head(df)
+
+new_df <- df %>%
+  clean_names() %>%
+  filter(df$Geo.Level == "NATIONAL", df$State == "US TOTAL") %>%
+  select(year, data_item, value) %>%
+  mutate(
+    year = as.numeric(year),
+    value = as.numeric(gsub(",", "", value))
+  ) %>%
+  filter(!is.na(value))
+head(new_df)
+
+```
+
+```{r}
+## 3.Pivot wider to make each variable a column
+strawberry <- new_df %>%
+  pivot_wider(
+    names_from = data_item,
+    values_from = value,
+    values_fn = mean  
+  )
+
+colnames(strawberry) <- c("Year", "Acres_Bearing", "Price_per_CWT",
+                          "Production_USD", "Utilized_Production_CWT")
+head(strawberry)
+
+##Fill missing value
+strawberry <- strawberry %>%
+  arrange(Year) %>%
+  mutate(
+    Acres_Bearing = na.approx(Acres_Bearing, na.rm = FALSE),
+    Price_per_CWT = na.approx(Price_per_CWT, na.rm = FALSE),
+    Production_USD = na.approx(Production_USD, na.rm = FALSE),
+    Utilized_Production_CWT = na.approx(Utilized_Production_CWT, na.rm = FALSE)
+  )
+
+head(strawberry)
+write_csv(strawberry, "clean_strawberry.csv")
+```
